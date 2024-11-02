@@ -2,12 +2,19 @@
 extern crate windows_service;
 
 use std::ffi::OsString;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::process::Command;
+use std::sync::atomic::AtomicU32;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use windows_service::{
-    service_dispatcher, Result,
-    service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType},
+    service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+        ServiceType,
+    },
     service_control_handler::{self, ServiceControlHandlerResult},
+    service_dispatcher, Result,
 };
 
 define_windows_service!(ffi_service_main, my_service_main);
@@ -30,7 +37,7 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
             ServiceControl::Stop => {
                 running_handle.store(false, Ordering::SeqCst); // Tell to the thread to stop when there is a stop event
                 ServiceControlHandlerResult::NoError
-            },
+            }
             _ => ServiceControlHandlerResult::NotImplemented,
         }
     })?;
@@ -46,7 +53,8 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
         process_id: None,
     })?;
 
-    let running_clone = Arc::clone(&running);
+    let child_pid = Arc::new(AtomicU32::new(0));
+    let child_pid_clone = Arc::clone(&child_pid);
     // Start the SSH command in a separate thread
     std::thread::spawn(move || {
         let args: Vec<String> = arguments
@@ -55,18 +63,13 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-
-        if let Ok(mut child) = Command::new("ssh")
-            .args(args)
-            .spawn()
-        {
+        if let Ok(mut child) = Command::new("ssh").args(args).spawn() {
+            // Save the child process ID
+            child_pid_clone.store(child.id(), Ordering::SeqCst);
             // Wait until the service is stopped
-            while running_clone.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_secs(5));
+            if let Err(e) = child.wait() {
+                eprintln!("Error waiting for the SSH command: {:?}", e);
             }
-
-            // Stop the SSH process if it's still running
-            let _ = child.kill();
         } else {
             eprintln!("Error starting the SSH command");
         }
@@ -76,6 +79,13 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
     while running.load(Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
+
+    // Stop the SSH process
+    let child_pid = child_pid.load(Ordering::SeqCst);
+    Command::new("taskkill")
+        .args(&["/F", "/T", "/PID", &child_pid.to_string()])
+        .output()
+        .expect("Failed to kill the SSH process");
 
     // Update the service status to Stopped
     status_handle.set_service_status(ServiceStatus {
