@@ -1,13 +1,16 @@
+#[cfg(target_os = "windows")]
 #[macro_use]
 extern crate windows_service;
 
 use std::ffi::OsString;
 use std::process::Command;
-use std::sync::atomic::AtomicU32;
+use std::sync::Mutex;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+
+#[cfg(target_os = "windows")]
 use windows_service::{
     service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
@@ -17,16 +20,30 @@ use windows_service::{
     service_dispatcher, Result,
 };
 
+#[cfg(target_os = "windows")]
 define_windows_service!(ffi_service_main, my_service_main);
 
 const SERVICE_NAME: &str = "mysshservice";
 
+// Static storage to hold arguments passed to main
+lazy_static::lazy_static! {
+    static ref SERVICE_ARGS: Mutex<Vec<OsString>> = Mutex::new(Vec::new());
+}
+
+#[cfg(target_os = "windows")]
 fn my_service_main(arguments: Vec<OsString>) {
-    if let Err(e) = run_service(arguments) {
-        eprintln!("Service failed: {:?}", e);
+    let result: Result<()>;
+    if arguments.len() > 1 {
+        result = run_service(arguments); // Run the service with the arguments passed with the service start command if any
+    } else {
+        result = run_service(SERVICE_ARGS.lock().unwrap().clone()); // Else, run the service with the arguments passed with the service create command
+    }
+    if let Err(err) = result {
+        eprintln!("Error starting the service: {:?}", err);
     }
 }
 
+#[cfg(target_os = "windows")]
 fn run_service(arguments: Vec<OsString>) -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let running_handle = running.clone();
@@ -53,8 +70,9 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
         process_id: None,
     })?;
 
-    let child_pid = Arc::new(AtomicU32::new(0));
-    let child_pid_clone = Arc::clone(&child_pid);
+    let shared_child = Arc::new(Mutex::new(None));
+    let shared_child_clone = Arc::clone(&shared_child);
+    let runing_clone = Arc::clone(&running);
     // Start the SSH command in a separate thread
     std::thread::spawn(move || {
         let args: Vec<String> = arguments
@@ -63,12 +81,12 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        if let Ok(mut child) = Command::new("ssh").args(args).spawn() {
-            // Save the child process ID
-            child_pid_clone.store(child.id(), Ordering::SeqCst);
+        if let Ok(child) = Command::new("ssh").args(args).spawn() {
+            // Save the child process to be able to kill it later
+            shared_child_clone.lock().unwrap().replace(child);
             // Wait until the service is stopped
-            if let Err(e) = child.wait() {
-                eprintln!("Error waiting for the SSH command: {:?}", e);
+            while runing_clone.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
         } else {
             eprintln!("Error starting the SSH command");
@@ -81,11 +99,12 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
     }
 
     // Stop the SSH process
-    let child_pid = child_pid.load(Ordering::SeqCst);
-    Command::new("taskkill")
-        .args(&["/F", "/T", "/PID", &child_pid.to_string()])
-        .output()
-        .expect("Failed to kill the SSH process");
+    let child = shared_child.lock().unwrap().take();
+    if let Some(mut child) = child {
+        if let Err(e) = child.kill() {
+            eprintln!("Error killing the SSH process: {:?}", e);
+        }
+    }
 
     // Update the service status to Stopped
     status_handle.set_service_status(ServiceStatus {
@@ -101,7 +120,17 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn main() -> Result<()> {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    // Store arguments in global storage
+    *SERVICE_ARGS.lock().unwrap() = args.clone();
+
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)?;
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn main() {
+    panic!("This program is a Windows service and it can run only on Windows");
 }
