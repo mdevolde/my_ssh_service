@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 windows-service="0.7.0"
 lazy_static="1.5.0"
+log="0.4.22"
+flexi_logger="0.29.6"

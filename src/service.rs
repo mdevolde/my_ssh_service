@@ -6,6 +6,7 @@ use std::sync::{
     Arc,
 };
 
+use log::{error, info};
 use windows_service::{
     define_windows_service,
     service::{
@@ -18,7 +19,7 @@ use windows_service::{
 
 define_windows_service!(ffi_service_main, my_service_main);
 
-const SERVICE_NAME: &str = "mysshservice";
+pub const SERVICE_NAME: &str = "mysshservice";
 
 // Static storage to hold arguments passed to main
 lazy_static::lazy_static! {
@@ -33,7 +34,7 @@ fn my_service_main(arguments: Vec<OsString>) {
         result = run_service(SERVICE_ARGS.lock().unwrap().clone()); // Else, run the service with the arguments passed with the service create command
     }
     if let Err(err) = result {
-        eprintln!("Error starting the service: {:?}", err);
+        error!("Error starting the service: {:?}", err);
     }
 }
 
@@ -82,7 +83,7 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         } else {
-            eprintln!("Error starting the SSH command");
+            error!("Error starting the SSH command");
         }
     });
 
@@ -95,7 +96,7 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
     let child = shared_child.lock().unwrap().take();
     if let Some(mut child) = child {
         if let Err(e) = child.kill() {
-            eprintln!("Error killing the SSH process: {:?}", e);
+            error!("Error killing the SSH process: {:?}", e);
         }
     }
 
@@ -114,6 +115,8 @@ fn run_service(arguments: Vec<OsString>) -> Result<()> {
 }
 
 pub fn run_service_dispatcher() -> Result<()> {
+    info!("Starting the service");
+
     let args: Vec<OsString> = std::env::args_os().collect();
     // Store arguments in global storage
     *SERVICE_ARGS.lock().unwrap() = args.clone();

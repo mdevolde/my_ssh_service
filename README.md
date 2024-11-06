@@ -32,3 +32,6 @@ To check the status of the service, you need to run this command:
 ```powershell
 sc.exe query "mysshservice"
 ```
+
+## Check the logs of the service
+The logs of the service are available in `%ProgramData%\mysshservice\logs\`.
